@@ -1,0 +1,14 @@
+services:
+  scan-to-paperless:
+    build: .
+    image: ghcr.io/hensing/scan-to-paperless:latest
+    container_name: scan-to-paperless
+    restart: unless-stopped
+    ports:
+      # Standard SMB port mapping
+      - "445:445"
+    env_file:
+      - .env
+    volumes:
+      # Data storage (Inbox & Archive)
+      - ./data:/data

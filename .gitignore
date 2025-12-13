@@ -1,0 +1,6 @@
+# Environment variables
+.env
+
+# Data directories
+data/
+ssh/
