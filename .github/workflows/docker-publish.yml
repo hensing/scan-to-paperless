@@ -3,17 +3,60 @@ name: Docker Build & Publish
 on:
   push:
     branches: [ "main", "master" ]
-    # Publish semver tags as releases.
+    # Trigger on semver tags (e.g., v1.0.0)
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ "main", "master" ]
+  # Run a security scan daily at 04:00 UTC
+  schedule:
+    - cron: '0 4 * * *'
+  # Allow manual trigger for debugging
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  # JOB 1: Security Assessment
+  # Determines if a build is necessary based on the event type and security status.
+  check-necessity:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decision.outputs.should_build }}
+    steps:
+      - name: Check trigger type
+        id: decision
+        run: |
+          # Case 1: Manual trigger, Push, or Tag -> Always build
+          if [[ "${{ github.event_name }}" != "schedule" ]]; then
+            echo "Event is ${{ github.event_name }}. Build required."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Schedule event detected. Scanning current image for fixable vulnerabilities..."
+          
+          # Install Trivy scanner
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Scan the specific image
+          # --exit-code 1: Fail the command if vulnerabilities are found
+          # --ignore-unfixed: Only flag vulnerabilities that have a patch available (Alpine)
+          # --severity: Only care about HIGH and CRITICAL issues
+          if trivy image --exit-code 1 --ignore-unfixed --severity CRITICAL,HIGH ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest; then
+            echo "No critical, fixable vulnerabilities found. Skipping build to save resources."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Critical vulnerabilities found! Triggering build to apply security patches."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  # JOB 2: Build & Push
+  # Runs only if the previous job determined it is necessary.
+  build-and-push:
+    needs: check-necessity
+    if: needs.check-necessity.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,7 +66,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Set up QEMU for multi-arch builds (AMD64 + ARM64 for Raspi)
+      # Set up QEMU to allow building for ARM64 (Raspberry Pi) on an AMD64 runner
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -41,20 +84,23 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Extract metadata (tags, labels) for Docker
+      # Logic:
+      # - Push to main: Tags as 'main'
+      # - Push tag v1.0.0: Tags as '1.0.0', '1.0', '1', and 'latest'
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=schedule
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'format("refs/tags/{0}", github.ref_name)' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
-      # Build and push Docker image
+      # Build and push the image
+      # 'no-cache' is enabled only for scheduled builds to ensure fresh packages are downloaded
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v5
@@ -63,5 +109,5 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Build for standard PC and Raspberry Pi (64bit)
           platforms: linux/amd64,linux/arm64
+          no-cache: ${{ github.event_name == 'schedule' }}
