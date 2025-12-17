@@ -110,6 +110,7 @@ Configure your physical scanner (Brother, Canon, HP, etc.) with these settings:
 | `WHITELIST` | Allowed file extensions | `pdf,jpg,png,bmp` | ❌ |
 | `ARCHIVE` | `true` = Move to archive folder, `false` = Delete after upload | `true` | ❌ |
 | `UPLOAD_TIMEOUT` | Max time (seconds) for API upload | `30` | ❌ |
+| `SCAN_SETTLE_TIME` | Seconds to wait after detection before upload | ̀ 5` | ❌ |
 
 ### Samba & User Settings
 
@@ -141,6 +142,7 @@ The container expects a volume mounted to `/data`. It will automatically create 
 * Check if `PAPERLESS_URL` is reachable from inside the container.
 * Verify `PAPERLESS_API_KEY`.
 * If using a self-signed cert, try setting `PAPERLESS_VERIFY_SSL=false`.
+* Increase `SCAN_SETTLE_TIME`. Some network scanners report "finished" before the file is fully flushed to the disk.
 
 **🚫 Scanner cannot connect (Network Error)**
 * Ensure port **445** is not blocked by a firewall on the host.

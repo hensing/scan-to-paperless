@@ -51,6 +51,7 @@ PAPERLESS_TAGS=${PAPERLESS_TAGS:-""}
 WHITELIST=${WHITELIST:-"pdf,jpg,png,bmp"}
 ARCHIVE=${ARCHIVE:-true}
 UPLOAD_TIMEOUT=${UPLOAD_TIMEOUT:-30}
+SCAN_SETTLE_TIME=${SCAN_SETTLE_TIME:-5}
 
 # Validate required variables
 if [ -z "$PAPERLESS_URL" ] || [ -z "$PAPERLESS_API_KEY" ]; then
@@ -67,6 +68,7 @@ echo "[CONFIG] Paperless URL: $PAPERLESS_URL"
 echo "[CONFIG] SMB Share: $SMB_SHARE"
 echo "[CONFIG] Archive: $ARCHIVE"
 echo "[CONFIG] Whitelist: $WHITELIST"
+echo "[CONFIG] Settle Time: ${SCAN_SETTLE_TIME}s"
 echo "[CONFIG] User UID: $(id -u), GID: $(id -g)"
 
 # --- 1. Samba Configuration ---
@@ -169,17 +171,28 @@ upload_to_paperless() {
     fi
 }
 
-# File Watcher Loop
+# Watcher Loop
 inotifywait -m "/data/inbox" -e close_write -e moved_to --format '%f' | while read FILENAME; do
     echo "[DETECTED] New file: $FILENAME"
     FILEPATH="/data/inbox/$FILENAME"
 
     if [ -f "$FILEPATH" ]; then
-        # Check whitelist
+        # 1. Check whitelist FIRST
         if check_whitelist "$FILENAME"; then
-            echo "[CHECK] File type allowed."
 
-            # Upload to Paperless
+            # 2. Settle Time (Wait for write to finish completely)
+            echo "[WAIT] Waiting ${SCAN_SETTLE_TIME}s for file to settle..."
+            sleep "$SCAN_SETTLE_TIME"
+
+            # Check if file still exists after sleep (race condition check)
+            if [ ! -f "$FILEPATH" ]; then
+                 echo "[INFO] File disappeared during wait time. Ignoring."
+                 continue
+            fi
+
+            echo "[CHECK] File type allowed and settled."
+
+            # 3. Upload
             if upload_to_paperless "$FILEPATH"; then
                 # Handle post-upload
                 if [ "$ARCHIVE" = "true" ]; then
