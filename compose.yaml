@@ -12,3 +12,5 @@ services:
     volumes:
       # Data storage (Inbox & Archive)
       - ./data:/data
+      # Optional: multi-user config (create config/users.conf to enable)
+      - ./config:/config:ro

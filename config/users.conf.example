@@ -1,0 +1,17 @@
+# scan-to-paperless: Multi-user configuration
+# -----------------------------------------------
+# Format (colon-separated):
+#   smb_user:smb_password:smb_share:paperless_api_key:paperless_tags
+#
+# smb_user        - Linux/SMB username. Unique, no spaces.
+# smb_password    - Password for the SMB share.
+# smb_share       - Share name visible to the scanner (e.g. alice_scans).
+# paperless_api_key - API token from Paperless Settings > API Tokens.
+# paperless_tags  - Optional. Comma-separated Paperless-NGX tag names.
+#
+# Lines starting with # and empty lines are ignored.
+# -----------------------------------------------
+
+alice:secretpassword1:alice_scans:paperless-api-token-alice:scanned,alice
+bob:secretpassword2:bob_docs:paperless-api-token-bob:scanned,bob
+carol:secretpassword3:carol:paperless-api-token-carol:

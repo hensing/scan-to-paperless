@@ -26,8 +26,9 @@ WORKDIR /app
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-RUN mkdir -p /data/inbox /data/archive /var/lib/samba /var/log/samba /run/samba \
-    && chown -R appuser:appgroup /app /data /var/lib/samba /var/log/samba /run/samba
+RUN mkdir -p /data/inbox /data/archive /var/lib/samba /var/log/samba /run/samba /config \
+    && chown -R appuser:appgroup /app /data /var/lib/samba /var/log/samba /run/samba \
+    && chmod 755 /config
 
 EXPOSE 445
 

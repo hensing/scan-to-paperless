@@ -4,84 +4,132 @@
 
 set -e
 
-# --- 0. Fix Permissions & Drop Privileges ---
-# Running as root initially
+USERS_CONFIG=${USERS_CONFIG:-"/config/users.conf"}
+SMB_CONF="/tmp/smb.conf"
+
+# =========================================================
+# ROOT SETUP PHASE
+# =========================================================
 if [ "$(id -u)" = "0" ]; then
-    
-    # Read PUID and PGID from environment, default to 1000
+
     TARGET_UID=${PUID:-1000}
     TARGET_GID=${PGID:-1000}
-
     echo "[INIT] Setting up user with PUID: $TARGET_UID and PGID: $TARGET_GID"
-
-    # Update internal user 'appuser' to match requested PUID/PGID
-    # We use -o to allow non-unique IDs if necessary
     groupmod -o -g "$TARGET_GID" appgroup
     usermod -o -u "$TARGET_UID" -g "$TARGET_GID" appuser
 
-    echo "[INIT] Fixing permissions on /data and /home/appuser..."
-    
-    # Ensure directories exist
-    mkdir -p /data/inbox /data/archive
-    
-    # Fix ownership for data volume
-    chown -R appuser:appgroup /data
-    
-    # Ensure home directory structure for Samba
-    mkdir -p /home/appuser/samba
-    chown -R appuser:appgroup /home/appuser
+    # Prepare Samba runtime directories
+    mkdir -p /home/appuser/samba/private \
+             /home/appuser/samba/var/locks \
+             /home/appuser/samba/var/cache \
+             /home/appuser/samba/var/run
 
-    echo "[INIT] Dropping privileges to appuser..."
-    # Restart script as appuser (now with correct UID/GID)
-    exec su-exec appuser "$0" "$@"
-fi
+    if [ -f "$USERS_CONFIG" ]; then
+        # -------------------------------------------------------
+        # MULTI-USER MODE
+        # -------------------------------------------------------
+        echo "[INIT] Multi-user mode: reading $USERS_CONFIG"
 
-# =========================================================
-# RUNNING AS APPUSER BELOW THIS LINE
-# =========================================================
+        # Write global smb.conf header (no username map in multi-user mode)
+        cat > "$SMB_CONF" <<SMBEOF
+[global]
+   workgroup = WORKGROUP
+   server string = Scanner Share
+   security = user
+   map to guest = Bad User
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+   smb ports = 445
+   log level = 1
+   private dir = /home/appuser/samba/private
+   lock directory = /home/appuser/samba/var/locks
+   pid directory = /home/appuser/samba/var/run
+   state directory = /home/appuser/samba/var/locks
+   cache directory = /home/appuser/samba/var/cache
+   ncalrpc dir = /home/appuser/samba/var/locks
+   log file = /home/appuser/samba/var/log.%m
 
-# --- Set Defaults ---
-SMB_USER=${SMB_USER:-"scanner"}
-SMB_PASSWORD=${SMB_PASSWORD:-"scan123"}
-SMB_SHARE=${SMB_SHARE:-"scanner"}
-PAPERLESS_URL=${PAPERLESS_URL:-""}
-PAPERLESS_API_KEY=${PAPERLESS_API_KEY:-""}
-PAPERLESS_VERIFY_SSL=${PAPERLESS_VERIFY_SSL:-true}
-PAPERLESS_TAGS=${PAPERLESS_TAGS:-""}
-WHITELIST=${WHITELIST:-"pdf,jpg,png,bmp"}
-ARCHIVE=${ARCHIVE:-true}
-UPLOAD_TIMEOUT=${UPLOAD_TIMEOUT:-30}
-SCAN_SETTLE_TIME=${SCAN_SETTLE_TIME:-5}
+SMBEOF
 
-# Validate required variables
-if [ -z "$PAPERLESS_URL" ] || [ -z "$PAPERLESS_API_KEY" ]; then
-    echo "[ERROR] PAPERLESS_URL and PAPERLESS_API_KEY must be set in .env"
-    exit 1
-fi
+        user_count=0
+        while IFS=: read -r u_user u_pass u_share u_api_key u_tags || [ -n "$u_user" ]; do
+            # Strip inline comments and whitespace
+            u_user="${u_user%%#*}"
+            u_user="${u_user//[[:space:]]/}"
+            [ -z "$u_user" ] && continue
 
-echo "╔══════════════════════════════╗"
-echo "║      SCAN TO PAPERLESS       ║"
-echo "║     Dr. Henning Dickten      ║"
-echo "║            2025              ║"
-echo "╚══════════════════════════════╝"
-echo "[CONFIG] Paperless URL: $PAPERLESS_URL"
-echo "[CONFIG] SMB Share: $SMB_SHARE"
-echo "[CONFIG] Archive: $ARCHIVE"
-echo "[CONFIG] Whitelist: $WHITELIST"
-echo "[CONFIG] Settle Time: ${SCAN_SETTLE_TIME}s"
-echo "[CONFIG] User UID: $(id -u), GID: $(id -g)"
+            # Validate required fields
+            if [ -z "$u_pass" ] || [ -z "$u_share" ] || [ -z "$u_api_key" ]; then
+                echo "[WARN] Skipping incomplete entry for user '$u_user' (need password, share, api_key)"
+                continue
+            fi
 
-# --- 1. Samba Configuration ---
-SMB_CONF="/tmp/smb.conf"
-SMB_USERMAP="/tmp/usermap"
+            echo "[INIT] Configuring user: $u_user (share: $u_share)"
 
-# Create Samba directories in User Home
-mkdir -p /home/appuser/samba/private /home/appuser/samba/var/locks /home/appuser/samba/var/cache /home/appuser/samba/var/run
+            # Create ghost Linux user for pdbedit (no login, no home)
+            if ! id "$u_user" &>/dev/null; then
+                adduser -D -H -G appgroup "$u_user"
+                echo "[INIT] Created Linux user: $u_user"
+            fi
 
-# Username map: map scanner to appuser
-echo "appuser = $SMB_USER" > "$SMB_USERMAP"
+            # Create per-user directories
+            mkdir -p "/data/$u_user/inbox" "/data/$u_user/archive"
 
-cat > "$SMB_CONF" <<EOF
+            # Append share stanza to smb.conf
+            cat >> "$SMB_CONF" <<SMBEOF
+[$u_share]
+   path = /data/$u_user/inbox
+   comment = Scanner inbox for $u_user
+   valid users = $u_user
+   force user = appuser
+   writable = yes
+   browsable = yes
+   create mask = 0660
+   directory mask = 0770
+
+SMBEOF
+
+            # Add Samba password (requires root, done here before privilege drop)
+            echo "[INIT] Setting Samba password for: $u_user"
+            printf '%s\n%s\n' "$u_pass" "$u_pass" | \
+                pdbedit --configfile "$SMB_CONF" -a -u "$u_user" -t 2>/dev/null || \
+            printf '%s\n%s\n' "$u_pass" "$u_pass" | \
+                pdbedit --configfile "$SMB_CONF" -r -u "$u_user" -t 2>/dev/null || true
+
+            user_count=$((user_count + 1))
+        done < "$USERS_CONFIG"
+
+        if [ "$user_count" -eq 0 ]; then
+            echo "[ERROR] No valid users found in $USERS_CONFIG"
+            exit 1
+        fi
+
+        echo "[INIT] Configured $user_count user(s)."
+
+    else
+        # -------------------------------------------------------
+        # SINGLE-USER (LEGACY) MODE
+        # -------------------------------------------------------
+        if [ -z "${PAPERLESS_API_KEY:-}" ]; then
+            echo "[ERROR] No $USERS_CONFIG found and PAPERLESS_API_KEY is not set."
+            echo "[ERROR] Either mount a users.conf or set PAPERLESS_API_KEY in your .env"
+            exit 1
+        fi
+
+        SMB_USER_VAL="${SMB_USER:-scanner}"
+        SMB_PASS_VAL="${SMB_PASSWORD:-scan123}"
+        SMB_SHARE_VAL="${SMB_SHARE:-scanner}"
+        SMB_USERMAP="/tmp/usermap"
+
+        echo "[INIT] Single-user mode: SMB user '$SMB_USER_VAL', share '$SMB_SHARE_VAL'"
+
+        mkdir -p /data/inbox /data/archive
+
+        echo "appuser = $SMB_USER_VAL" > "$SMB_USERMAP"
+
+        cat > "$SMB_CONF" <<SMBEOF
 [global]
    workgroup = WORKGROUP
    server string = Scanner Share
@@ -102,7 +150,7 @@ cat > "$SMB_CONF" <<EOF
    ncalrpc dir = /home/appuser/samba/var/locks
    log file = /home/appuser/samba/var/log.%m
 
-[$SMB_SHARE]
+[$SMB_SHARE_VAL]
    path = /data/inbox
    comment = Place Scans Here
    valid users = appuser
@@ -111,106 +159,168 @@ cat > "$SMB_CONF" <<EOF
    browsable = yes
    create mask = 0660
    directory mask = 0770
-EOF
+SMBEOF
 
-# Setup Samba User
-echo "[INIT] Setting up Samba user for appuser via pdbedit..."
-echo -e "$SMB_PASSWORD\n$SMB_PASSWORD" | pdbedit --configfile "$SMB_CONF" -a -u appuser -t
+        printf '%s\n%s\n' "$SMB_PASS_VAL" "$SMB_PASS_VAL" | \
+            pdbedit --configfile "$SMB_CONF" -a -u appuser -t 2>/dev/null || \
+        printf '%s\n%s\n' "$SMB_PASS_VAL" "$SMB_PASS_VAL" | \
+            pdbedit --configfile "$SMB_CONF" -r -u appuser -t 2>/dev/null || true
+    fi
 
-# --- 2. Start Samba in Background ---
-echo "[INFO] Starting smbd on port 445..."
-smbd -F -s "$SMB_CONF" --no-process-group < /dev/null &
-SAMBA_PID=$!
+    # Fix ownership
+    chown -R appuser:appgroup /data /home/appuser
 
-# --- 3. File Watcher & Upload Logic ---
-echo "[INFO] Watching /data/inbox for new files..."
+    echo "[INIT] Dropping privileges to appuser..."
+    exec su-exec appuser "$0" --run
+fi
 
-# Helper Functions
+# =========================================================
+# SERVICE PHASE (running as appuser)
+# =========================================================
+[ "$1" != "--run" ] && { echo "[ERROR] Unexpected invocation. Use the Docker entrypoint."; exit 1; }
+
+# --- Global Settings ---
+PAPERLESS_URL=${PAPERLESS_URL:-""}
+PAPERLESS_VERIFY_SSL=${PAPERLESS_VERIFY_SSL:-true}
+WHITELIST=${WHITELIST:-"pdf,jpg,png,bmp"}
+ARCHIVE=${ARCHIVE:-true}
+UPLOAD_TIMEOUT=${UPLOAD_TIMEOUT:-30}
+SCAN_SETTLE_TIME=${SCAN_SETTLE_TIME:-5}
+
+if [ -z "$PAPERLESS_URL" ]; then
+    echo "[ERROR] PAPERLESS_URL must be set."
+    exit 1
+fi
+
+echo "╔══════════════════════════════╗"
+echo "║      SCAN TO PAPERLESS       ║"
+echo "║     Dr. Henning Dickten      ║"
+echo "║            2025              ║"
+echo "╚══════════════════════════════╝"
+echo "[CONFIG] Paperless URL: $PAPERLESS_URL"
+echo "[CONFIG] Archive: $ARCHIVE | Whitelist: $WHITELIST | Settle: ${SCAN_SETTLE_TIME}s"
+echo "[CONFIG] User UID: $(id -u), GID: $(id -g)"
+
+# --- Helper Functions ---
+
 check_whitelist() {
     local filename="$1"
     local ext="${filename##*.}"
     ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
-
     IFS=',' read -ra EXT_ARRAY <<< "$WHITELIST"
     for allowed_ext in "${EXT_ARRAY[@]}"; do
         allowed_ext=$(echo "$allowed_ext" | tr '[:upper:]' '[:lower:]' | xargs)
-        if [ "$ext" = "$allowed_ext" ]; then
-            return 0
-        fi
+        [ "$ext" = "$allowed_ext" ] && return 0
     done
     return 1
 }
 
 upload_to_paperless() {
     local filepath="$1"
-    local filename=$(basename "$filepath")
+    local api_key="$2"
+    local tags="$3"
+    local filename
+    filename=$(basename "$filepath")
 
-    echo "[UPLOAD] Uploading $filename to Paperless-NGX..."
+    echo "[UPLOAD] Uploading $filename..."
 
     local curl_opts=()
-    if [ "$PAPERLESS_VERIFY_SSL" = "false" ]; then
-        curl_opts+=("--insecure")
-    fi
+    [ "$PAPERLESS_VERIFY_SSL" = "false" ] && curl_opts+=("--insecure")
 
     local curl_form=("-F" "document=@$filepath")
-    if [ -n "$PAPERLESS_TAGS" ]; then
-        curl_form+=("-F" "tags=$PAPERLESS_TAGS")
-    fi
+    [ -n "$tags" ] && curl_form+=("-F" "tags=$tags")
 
     if curl "${curl_opts[@]}" \
           --max-time "$UPLOAD_TIMEOUT" \
           -X POST \
-          -H "Authorization: Token $PAPERLESS_API_KEY" \
+          -H "Authorization: Token $api_key" \
           "${curl_form[@]}" \
           "$PAPERLESS_URL/api/documents/post_document/"; then
-        echo "[SUCCESS] Upload complete."
+        echo "[SUCCESS] Upload complete: $filename"
         return 0
     else
-        echo "[ERROR] Upload failed."
+        echo "[ERROR] Upload failed: $filename"
         return 1
     fi
 }
 
-# Watcher Loop
-inotifywait -m "/data/inbox" -e close_write -e moved_to --format '%f' | while read FILENAME; do
-    echo "[DETECTED] New file: $FILENAME"
-    FILEPATH="/data/inbox/$FILENAME"
+# Watcher for a single user's inbox directory.
+# All config is passed as arguments to avoid issues with subshell variable scoping.
+watch_inbox() {
+    local label="$1"
+    local inbox_dir="$2"
+    local archive_dir="$3"
+    local api_key="$4"
+    local tags="$5"
 
-    if [ -f "$FILEPATH" ]; then
-        # 1. Check whitelist FIRST
-        if check_whitelist "$FILENAME"; then
+    echo "[INFO] [$label] Watching $inbox_dir..."
 
-            # 2. Settle Time (Wait for write to finish completely)
-            echo "[WAIT] Waiting ${SCAN_SETTLE_TIME}s for file to settle..."
-            sleep "$SCAN_SETTLE_TIME"
+    inotifywait -m "$inbox_dir" -e close_write -e moved_to --format '%f' | while read -r FILENAME; do
+        echo "[$label] Detected: $FILENAME"
+        local FILEPATH="$inbox_dir/$FILENAME"
 
-            # Check if file still exists after sleep (race condition check)
-            if [ ! -f "$FILEPATH" ]; then
-                 echo "[INFO] File disappeared during wait time. Ignoring."
-                 continue
-            fi
+        if [ -f "$FILEPATH" ]; then
+            if check_whitelist "$FILENAME"; then
+                echo "[$label] Waiting ${SCAN_SETTLE_TIME}s to settle..."
+                sleep "$SCAN_SETTLE_TIME"
 
-            echo "[CHECK] File type allowed and settled."
+                if [ ! -f "$FILEPATH" ]; then
+                    echo "[$label] File disappeared during wait. Skipping."
+                    continue
+                fi
 
-            # 3. Upload
-            if upload_to_paperless "$FILEPATH"; then
-                # Handle post-upload
-                if [ "$ARCHIVE" = "true" ]; then
-                    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-                    mv "$FILEPATH" "/data/archive/${TIMESTAMP}_$FILENAME"
-                    echo "[ARCHIVE] File moved to archive."
+                if upload_to_paperless "$FILEPATH" "$api_key" "$tags"; then
+                    if [ "$ARCHIVE" = "true" ]; then
+                        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+                        mv "$FILEPATH" "$archive_dir/${TIMESTAMP}_$FILENAME"
+                        echo "[$label] Archived."
+                    else
+                        rm "$FILEPATH"
+                        echo "[$label] Deleted."
+                    fi
                 else
-                    rm "$FILEPATH"
-                    echo "[DELETE] File deleted."
+                    echo "[$label] Upload failed — keeping file for retry."
                 fi
             else
-                echo "[SKIP] Upload failed, keeping file in inbox for retry."
+                echo "[$label] Skipped (not in whitelist): $FILENAME"
             fi
-        else
-            echo "[SKIP] File type not in whitelist ($WHITELIST), ignoring."
         fi
-    fi
-done &
+    done
+}
 
-# Keep container alive
+# --- Start Watchers ---
+
+if [ -f "$USERS_CONFIG" ]; then
+    # Multi-user mode: one watcher per user
+    watcher_count=0
+    while IFS=: read -r u_user u_pass u_share u_api_key u_tags || [ -n "$u_user" ]; do
+        u_user="${u_user%%#*}"
+        u_user="${u_user//[[:space:]]/}"
+        [ -z "$u_user" ] && continue
+        [ -z "$u_pass" ] || [ -z "$u_share" ] || [ -z "$u_api_key" ] && continue
+
+        watch_inbox "$u_user" "/data/$u_user/inbox" "/data/$u_user/archive" "$u_api_key" "${u_tags:-}" &
+        watcher_count=$((watcher_count + 1))
+    done < "$USERS_CONFIG"
+    echo "[INFO] Started $watcher_count watcher(s)."
+else
+    # Single-user mode
+    u="${SMB_USER:-scanner}"
+    echo "[CONFIG] SMB Share: ${SMB_SHARE:-scanner}"
+    watch_inbox "$u" "/data/inbox" "/data/archive" "$PAPERLESS_API_KEY" "${PAPERLESS_TAGS:-}" &
+fi
+
+# --- Start Samba ---
+echo "[INFO] Starting smbd on port 445..."
+smbd -F -s "$SMB_CONF" --no-process-group < /dev/null &
+SAMBA_PID=$!
+
+# Graceful shutdown: kill all background jobs when smbd exits or SIGTERM received
+cleanup() {
+    echo "[INFO] Shutting down..."
+    kill "$(jobs -p)" 2>/dev/null || true
+    wait
+}
+trap cleanup TERM INT
+
 wait $SAMBA_PID
