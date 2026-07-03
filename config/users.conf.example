@@ -10,6 +10,15 @@
 # paperless_tags  - Optional. Comma-separated Paperless-NGX tag names.
 #
 # Lines starting with # and empty lines are ignored.
+#
+# Usernames and share names must match ^[A-Za-z][A-Za-z0-9_-]*$ (letters,
+# digits, '_'/'-', starting with a letter) -- anything else is skipped.
+#
+# The container ships with a fixed pool of 32 internal Samba accounts
+# (SMB_POOL_SIZE build arg). Each line here is assigned to one pool slot at
+# startup, in order; lines beyond the pool size are skipped with a warning.
+# Rebuild the image with --build-arg SMB_POOL_SIZE=<larger> to support more
+# than 32 simultaneous users.
 # -----------------------------------------------
 
 alice:secretpassword1:alice_scans:paperless-api-token-alice:scanned,alice

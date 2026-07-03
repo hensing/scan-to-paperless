@@ -1,6 +1,10 @@
 # Environment variables
 .env
 
+# Runtime multi-user config -- contains plaintext SMB passwords and
+# Paperless API tokens. Only config/users.conf.example should be tracked.
+config/users.conf
+
 # Data directories
 data/
 ssh/

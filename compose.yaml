@@ -4,9 +4,21 @@ services:
     image: ghcr.io/hensing/scan-to-paperless:latest
     container_name: scan-to-paperless
     restart: unless-stopped
+    # Rootless: the container runs as fixed UID/GID 65532:65532 (the
+    # "distroless nonroot" convention -- also set via USER in the Dockerfile,
+    # and deliberately not 1000, to avoid colliding with a real interactive/
+    # sudo-capable host user) and needs no Linux capabilities. smbd listens
+    # internally on the unprivileged port 8445; Docker (not the container)
+    # publishes it externally as the well-known SMB port 445, so scanners
+    # are unaffected. If you rebuild with different --build-arg
+    # APP_UID/APP_GID values, update this to match.
+    user: "65532:65532"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - "ALL"
     ports:
-      # Standard SMB port mapping
-      - "445:445"
+      - "445:8445"
     env_file:
       - .env
     volumes:

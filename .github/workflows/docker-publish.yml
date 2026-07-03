@@ -26,30 +26,42 @@ jobs:
       should_build: ${{ steps.decision.outputs.should_build }}
     steps:
       - name: Check trigger type
-        id: decision
+        id: trigger
         run: |
-          # Case 1: Manual trigger, Push, or Tag -> Always build
           if [[ "${{ github.event_name }}" != "schedule" ]]; then
             echo "Event is ${{ github.event_name }}. Build required."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "Schedule event detected. Scanning current image for fixable vulnerabilities..."
-          
-          # Install Trivy scanner
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          
-          # Scan the specific image
-          # --exit-code 1: Fail the command if vulnerabilities are found
-          # --ignore-unfixed: Only flag vulnerabilities that have a patch available (Alpine)
-          # --severity: Only care about HIGH and CRITICAL issues
-          if trivy image --exit-code 1 --ignore-unfixed --severity CRITICAL,HIGH ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest; then
-            echo "No critical, fixable vulnerabilities found. Skipping build to save resources."
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "is_schedule=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Critical vulnerabilities found! Triggering build to apply security patches."
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Schedule event detected. Scanning current published image for fixable vulnerabilities..."
+            echo "is_schedule=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only runs on the nightly schedule trigger. Scans the already-published
+      # ':latest' image to decide whether a rebuild (to pick up patches) is
+      # worthwhile. continue-on-error lets us turn "vulnerabilities found"
+      # into a should_build=true decision instead of failing this job.
+      - name: Scan published image (schedule only)
+        if: steps.trigger.outputs.is_schedule == 'true'
+        id: scheduled-scan
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Decide
+        id: decision
+        run: |
+          if [[ "${{ steps.trigger.outputs.is_schedule }}" != "true" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.scheduled-scan.outcome }}" == "failure" ]]; then
+            echo "Critical vulnerabilities found in published image! Triggering build to apply security patches."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No critical, fixable vulnerabilities found. Skipping build to save resources."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
           fi
 
   # JOB 2: Build & Push
@@ -73,6 +85,30 @@ jobs:
       # Set up Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      # Build a single-arch (amd64) image locally, purely to scan it before
+      # anything is pushed. Buildx can't `--load` a multi-platform manifest,
+      # so this is the arch that gets a pre-push gate; arm64 is still covered
+      # (post-push) by the nightly scheduled scan against the published
+      # multi-arch manifest.
+      - name: Build amd64 image for pre-push scan
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: scan-to-paperless:pre-push-scan
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan amd64 image before push
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: scan-to-paperless:pre-push-scan
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
 
       # Login to GitHub Container Registry
       - name: Log into registry ${{ env.REGISTRY }}
@@ -99,8 +135,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
-      # Build and push the image
-      # 'no-cache' is enabled only for scheduled builds to ensure fresh packages are downloaded
+      # Build and push the image. Only reached if the pre-push scan above
+      # passed. 'no-cache' is enabled only for scheduled builds to ensure
+      # fresh packages are downloaded.
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v5
@@ -111,3 +148,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           no-cache: ${{ github.event_name == 'schedule' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
