@@ -92,7 +92,7 @@ jobs:
       # (post-push) by the nightly scheduled scan against the published
       # multi-arch manifest.
       - name: Build amd64 image for pre-push scan
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false
@@ -140,7 +140,7 @@ jobs:
       # fresh packages are downloaded.
       - name: Build and push Docker image
         id: build-and-push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
