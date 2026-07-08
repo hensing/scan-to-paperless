@@ -76,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Set up QEMU to allow building for ARM64 (Raspberry Pi) on an AMD64 runner
       - name: Set up QEMU
