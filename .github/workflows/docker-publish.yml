@@ -84,7 +84,7 @@ jobs:
 
       # Set up Docker Buildx
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Build a single-arch (amd64) image locally, purely to scan it before
       # anything is pushed. Buildx can't `--load` a multi-platform manifest,
