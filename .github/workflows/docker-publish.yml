@@ -80,7 +80,7 @@ jobs:
 
       # Set up QEMU to allow building for ARM64 (Raspberry Pi) on an AMD64 runner
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       # Set up Docker Buildx
       - name: Set up Docker Buildx
@@ -99,6 +99,7 @@ jobs:
           load: true
           tags: scan-to-paperless:pre-push-scan
           platforms: linux/amd64
+          no-cache: ${{ github.event_name == 'schedule' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
