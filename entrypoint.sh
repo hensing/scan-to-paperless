@@ -53,6 +53,52 @@ check_whitelist() {
     return 1
 }
 
+# Resolves comma-separated Paperless tag names (or already-numeric IDs) to a
+# list of numeric tag IDs via the Tags API. post_document/'s `tags` field is
+# a PrimaryKeyRelatedField -- it only accepts numeric PKs, one per repeated
+# `-F tags=<id>`, and never resolves names itself. A tag that can't be
+# resolved (not created yet in Paperless, or the API key lacks view_tag
+# permission) is skipped with a warning -- a bad tag name must never block
+# the actual document upload.
+resolve_tag_ids() {
+    local api_key="$1"
+    local names_csv="$2"
+    [ -z "$names_csv" ] && return 0
+
+    local curl_opts=()
+    [ "$PAPERLESS_VERIFY_SSL" = "false" ] && curl_opts+=("--insecure")
+
+    local hdr_file
+    hdr_file=$(mktemp)
+    chmod 600 "$hdr_file"
+    printf 'header = "Authorization: Token %s"\n' "$api_key" > "$hdr_file"
+
+    local ids=() name tag_id
+    IFS=',' read -ra names <<< "$names_csv"
+    for name in "${names[@]}"; do
+        name=$(echo "$name" | xargs)
+        [ -z "$name" ] && continue
+
+        if [[ "$name" =~ ^[0-9]+$ ]]; then
+            ids+=("$name")
+            continue
+        fi
+
+        tag_id=$(curl "${curl_opts[@]}" -s -K "$hdr_file" \
+            --data-urlencode "name__iexact=$name" -G \
+            "$PAPERLESS_URL/api/tags/" | jq -r '.results[0].id // empty')
+
+        if [ -n "$tag_id" ]; then
+            ids+=("$tag_id")
+        else
+            echo "[WARN] Could not resolve Paperless tag '$name' to an ID (create it in Paperless first, or check the API key's permissions)." >&2
+        fi
+    done
+
+    rm -f "$hdr_file"
+    (IFS=,; echo "${ids[*]}")
+}
+
 # Uploads via a curl config file (-K) rather than -H on the command line, so
 # the Paperless API token never appears in this process's argv (and is thus
 # not visible via `ps`/`/proc/<pid>/cmdline` to anything else sharing the
@@ -60,7 +106,7 @@ check_whitelist() {
 upload_to_paperless() {
     local filepath="$1"
     local api_key="$2"
-    local tags="$3"
+    local tag_ids="$3"
     local filename
     filename=$(basename "$filepath")
 
@@ -70,7 +116,13 @@ upload_to_paperless() {
     [ "$PAPERLESS_VERIFY_SSL" = "false" ] && curl_opts+=("--insecure")
 
     local curl_form=("-F" "document=@$filepath")
-    [ -n "$tags" ] && curl_form+=("-F" "tags=$tags")
+    if [ -n "$tag_ids" ]; then
+        local id
+        IFS=',' read -ra tag_id_array <<< "$tag_ids"
+        for id in "${tag_id_array[@]}"; do
+            curl_form+=("-F" "tags=$id")
+        done
+    fi
 
     local hdr_file
     hdr_file=$(mktemp)
@@ -120,6 +172,13 @@ watch_inbox() {
 
     echo "[INFO] [$label] Watching $inbox_dir..."
 
+    # Resolved once at watcher startup (not per file) to avoid a Tags API
+    # round-trip per scanned page. A tag created in Paperless after this
+    # point requires a container restart to be picked up -- same as any
+    # other users.conf change already does.
+    local tag_ids=""
+    [ -n "$tags" ] && tag_ids=$(resolve_tag_ids "$api_key" "$tags")
+
     inotifywait -m "$inbox_dir" -e close_write -e moved_to --format '%f' | while read -r FILENAME; do
         echo "[$label] Detected: $FILENAME"
         local FILEPATH="$inbox_dir/$FILENAME"
@@ -134,7 +193,7 @@ watch_inbox() {
                     continue
                 fi
 
-                if upload_to_paperless "$FILEPATH" "$api_key" "$tags"; then
+                if upload_to_paperless "$FILEPATH" "$api_key" "$tag_ids"; then
                     if [ "$ARCHIVE" = "true" ]; then
                         TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
                         mv "$FILEPATH" "$archive_dir/${TIMESTAMP}_$FILENAME"

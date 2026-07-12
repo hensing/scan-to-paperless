@@ -196,6 +196,48 @@ Each user's files land in `/data/<smb_user>/inbox` and are archived to `/data/<s
 
 ---
 
+### 🔐 Automating Ownership & Sharing via Paperless Workflows
+
+Want John's scans to automatically get shared with the "family" group, or
+have John's scanner account hand ownership of every document straight to
+Jane? This container doesn't set Paperless document owner/permissions
+itself — Paperless-NGX's own **Workflows** feature already does this well,
+and reuses code that's actually tested, so let it do the work.
+
+The trick is giving a Workflow something reliable to match on: Paperless's
+upload "Source" filter can't tell one API key from another (API and Web-UI
+uploads are one bucket), but a **tag unique to a user** can. That's exactly
+what `paperless_tags` in `users.conf` is for.
+
+1. **In Paperless**, create a tag that's unique to one user, e.g.
+   `alice_upload`.
+2. **In `users.conf`**, add that tag name to the user's `paperless_tags`
+   column (comma-separated with any other tags they already get), e.g.:
+   ```
+   alice:secretpassword1:alice_scans:paperless-api-token-alice:scanned,alice_upload
+   ```
+   Restart the container after adding a brand-new tag — tag names are
+   resolved to IDs once when each user's watcher starts.
+3. **In Paperless**, go to Settings → Workflows → add a new workflow:
+   - Trigger: **Document Added**
+   - Condition: has tag(s) `alice_upload`
+   - Action(s): **Assignment** → set the fields you want, e.g. assign
+     owner, or grant view/change permission to specific users or groups.
+
+Some concrete mappings for the scenarios above:
+
+| Goal | Workflow action |
+| :--- | :--- |
+| Auto-share John's uploads (R/W) with the "family" group | Assign view + change permission → group `family` |
+| John scans, ownership goes to Jane | Assign owner → `jane` |
+| A shared scanner account transfers rights on upload | Same as above, keyed off that account's own unique tag |
+
+Since the mapping lives in Paperless's Workflow UI rather than in
+`users.conf`, it can be changed anytime without touching or restarting this
+container — only the tag itself needs to exist before the watcher starts.
+
+---
+
 ## ⚙️ Configuration Reference
 
 ### Global Settings (`.env`)
@@ -218,7 +260,7 @@ Ignored when `config/users.conf` is present.
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `PAPERLESS_API_KEY` | API Token from Paperless Settings → API Tokens | - |
-| `PAPERLESS_TAGS` | Comma-separated tags to apply | `""` |
+| `PAPERLESS_TAGS` | Comma-separated tag names (or numeric IDs) to apply — see [Automating Ownership & Sharing](#-automating-ownership--sharing-via-paperless-workflows) | `""` |
 | `SMB_USER` | Username for the scanner to login | `scanner` |
 | `SMB_PASSWORD` | Password for the scanner | `scan123` |
 | `SMB_SHARE` | Name of the SMB share | `scanner` |
@@ -231,7 +273,7 @@ Ignored when `config/users.conf` is present.
 | `smb_password` | Password for the SMB share | ✅ |
 | `smb_share` | Share name visible to the scanner | ✅ |
 | `paperless_api_key` | API Token from Paperless Settings → API Tokens | ✅ |
-| `paperless_tags` | Comma-separated tags (optional, can be empty) | ❌ |
+| `paperless_tags` | Comma-separated tag names or numeric IDs (optional, can be empty) — see [Automating Ownership & Sharing](#-automating-ownership--sharing-via-paperless-workflows) | ❌ |
 
 `smb_user` and `smb_share` must match `^[A-Za-z][A-Za-z0-9_-]*$`; a fixed pool of 32 internal Samba accounts is available by default (`SMB_POOL_SIZE` build arg) — entries beyond that are skipped with a warning until the image is rebuilt with a larger pool.
 

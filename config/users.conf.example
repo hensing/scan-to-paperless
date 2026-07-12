@@ -7,7 +7,19 @@
 # smb_password    - Password for the SMB share.
 # smb_share       - Share name visible to the scanner (e.g. alice_scans).
 # paperless_api_key - API token from Paperless Settings > API Tokens.
-# paperless_tags  - Optional. Comma-separated Paperless-NGX tag names.
+# paperless_tags  - Optional. Comma-separated Paperless-NGX tag names (or
+#                   numeric tag IDs). Names are resolved to IDs once when
+#                   the watcher for that user starts -- the tag must
+#                   already exist in Paperless at that point (create it in
+#                   Paperless first, then start/restart this container).
+#                   An unresolvable name is skipped with a [WARN] in the
+#                   logs; it never blocks the upload itself.
+#
+#                   A tag unique to a user also doubles as the trigger
+#                   condition for a Paperless Workflow (Settings ->
+#                   Workflows, trigger "Document Added") that assigns
+#                   owner/view/change permissions automatically -- see the
+#                   README section on automating ownership via Workflows.
 #
 # Lines starting with # and empty lines are ignored.
 #

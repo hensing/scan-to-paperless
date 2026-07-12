@@ -30,7 +30,8 @@ RUN apk add --no-cache \
     inotify-tools \
     bash \
     tzdata \
-    curl
+    curl \
+    jq
 
 # Create the app user/group and a fixed pool of login-disabled Samba
 # accounts (smbuser01..smbuserNN) at build time. The container always runs
