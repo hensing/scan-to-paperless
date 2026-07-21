@@ -53,6 +53,19 @@ check_whitelist() {
     return 1
 }
 
+# macOS sprinkles metadata files into any SMB share it touches. AppleDouble
+# sidecar files (._foo.pdf) carry the real document's extension, so they'd
+# otherwise pass check_whitelist and get uploaded to Paperless as garbage.
+# These are matched by name, independent of WHITELIST.
+is_mac_metadata() {
+    case "$1" in
+        ._*|.DS_Store|.Spotlight-V100|.Trashes|.fseventsd|.TemporaryItems|.apdisk)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
+
 # Resolves comma-separated Paperless tag names (or already-numeric IDs) to a
 # list of numeric tag IDs via the Tags API. post_document/'s `tags` field is
 # a PrimaryKeyRelatedField -- it only accepts numeric PKs, one per repeated
@@ -180,34 +193,40 @@ watch_inbox() {
     [ -n "$tags" ] && tag_ids=$(resolve_tag_ids "$api_key" "$tags")
 
     inotifywait -m "$inbox_dir" -e close_write -e moved_to --format '%f' | while read -r FILENAME; do
-        echo "[$label] Detected: $FILENAME"
         local FILEPATH="$inbox_dir/$FILENAME"
 
-        if [ -f "$FILEPATH" ]; then
-            if check_whitelist "$FILENAME"; then
-                echo "[$label] Waiting ${SCAN_SETTLE_TIME}s to settle..."
-                sleep "$SCAN_SETTLE_TIME"
+        # Skip silently: macOS/Samba can fire several close_write/moved_to
+        # events for one physical copy, so a stale event may arrive after the
+        # file has already been archived or removed. Logging those makes the
+        # watcher look like it's also watching the archive dir.
+        [ -f "$FILEPATH" ] || continue
+        is_mac_metadata "$FILENAME" && continue
 
-                if [ ! -f "$FILEPATH" ]; then
-                    echo "[$label] File disappeared during wait. Skipping."
-                    continue
-                fi
+        echo "[$label] Detected: $FILENAME"
 
-                if upload_to_paperless "$FILEPATH" "$api_key" "$tag_ids"; then
-                    if [ "$ARCHIVE" = "true" ]; then
-                        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-                        mv "$FILEPATH" "$archive_dir/${TIMESTAMP}_$FILENAME"
-                        echo "[$label] Archived."
-                    else
-                        rm "$FILEPATH"
-                        echo "[$label] Deleted."
-                    fi
+        if check_whitelist "$FILENAME"; then
+            echo "[$label] Waiting ${SCAN_SETTLE_TIME}s to settle..."
+            sleep "$SCAN_SETTLE_TIME"
+
+            if [ ! -f "$FILEPATH" ]; then
+                echo "[$label] File disappeared during wait. Skipping."
+                continue
+            fi
+
+            if upload_to_paperless "$FILEPATH" "$api_key" "$tag_ids"; then
+                if [ "$ARCHIVE" = "true" ]; then
+                    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+                    mv "$FILEPATH" "$archive_dir/${TIMESTAMP}_$FILENAME"
+                    echo "[$label] Archived."
                 else
-                    echo "[$label] Upload failed — keeping file for retry."
+                    rm "$FILEPATH"
+                    echo "[$label] Deleted."
                 fi
             else
-                echo "[$label] Skipped (not in whitelist): $FILENAME"
+                echo "[$label] Upload failed — keeping file for retry."
             fi
+        else
+            echo "[$label] Skipped (not in whitelist): $FILENAME"
         fi
     done
 }
