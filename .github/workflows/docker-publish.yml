@@ -30,6 +30,12 @@ jobs:
     outputs:
       should_build: ${{ steps.decision.outputs.should_build }}
     steps:
+      # Needed so the scheduled scan below honours the repo's .trivyignore
+      # (otherwise a suppressed-but-fixable CVE would trigger a rebuild every
+      # night until the upstream package actually ships).
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       - name: Check trigger type
         id: trigger
         run: |
