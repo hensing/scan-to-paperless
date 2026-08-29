@@ -12,6 +12,11 @@ on:
     - cron: '0 4 * * *'
   # Allow manual trigger for debugging
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Build with --no-cache to pull fresh apk packages"
+        type: boolean
+        default: true
 
 env:
   REGISTRY: ghcr.io
@@ -99,7 +104,7 @@ jobs:
           load: true
           tags: scan-to-paperless:pre-push-scan
           platforms: linux/amd64
-          no-cache: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.force_rebuild == 'true') }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -137,8 +142,9 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       # Build and push the image. Only reached if the pre-push scan above
-      # passed. 'no-cache' is enabled only for scheduled builds to ensure
-      # fresh packages are downloaded.
+      # passed. 'no-cache' is enabled for the nightly scheduled build and for a
+      # manual run with force_rebuild=true, so a fresh set of apk packages is
+      # downloaded to pick up OS-level security patches.
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v7
@@ -148,6 +154,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
-          no-cache: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.force_rebuild == 'true') }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

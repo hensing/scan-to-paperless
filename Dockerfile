@@ -1,5 +1,10 @@
 # scan-to-paperless
-FROM alpine:3.24
+# Pinned to a digest so Dependabot (docker ecosystem) opens a PR whenever the
+# alpine:3.24 tag is rebuilt -- which is how Alpine ships security fixes for
+# apk packages such as libssl3/libcrypto3. A new digest also invalidates the
+# `apk add` layer below, so patched packages are pulled on the next build.
+# Refresh with: docker buildx imagetools inspect alpine:3.24 | grep -i '^Digest:'
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # Number of pre-provisioned Samba "pool" accounts available for multi-user
 # mode. Each configured user in users.conf is mapped (via Samba's
