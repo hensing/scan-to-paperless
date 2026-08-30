@@ -1,0 +1,14 @@
+# Trivy vulnerability suppressions.
+#
+# Each entry MUST carry a reason and a review date. Remove an entry as soon as
+# the upstream fix is installable so the scan gate regains its teeth.
+
+# CVE-2026-14456 -- openssl: DoS via unbounded memory growth in the QUIC server.
+# Fixed upstream in libcrypto3/libssl3 3.5.8-r0, but Alpine 3.24 (currently the
+# latest stable release) has not published that package yet, so `apk add` still
+# resolves 3.5.7-r0 and there is no newer base image to move to.
+# Not reachable here: this image runs smbd, not a QUIC server.
+# The base image is digest-pinned in the Dockerfile, so Dependabot will open the
+# real bump once Alpine rebuilds 3.24 -- DROP THIS LINE in that PR.
+# Added 2026-08-29. Re-check by 2026-10-01.
+CVE-2026-14456
