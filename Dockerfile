@@ -4,7 +4,7 @@
 # apk packages such as libssl3/libcrypto3. A new digest also invalidates the
 # `apk add` layer below, so patched packages are pulled on the next build.
 # Refresh with: docker buildx imagetools inspect alpine:3.24 | grep -i '^Digest:'
-FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 # Number of pre-provisioned Samba "pool" accounts available for multi-user
 # mode. Each configured user in users.conf is mapped (via Samba's
