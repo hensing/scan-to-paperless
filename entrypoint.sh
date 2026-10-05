@@ -24,6 +24,8 @@ WHITELIST=${WHITELIST:-"pdf,jpg,png,bmp"}
 ARCHIVE=${ARCHIVE:-true}
 UPLOAD_TIMEOUT=${UPLOAD_TIMEOUT:-30}
 SCAN_SETTLE_TIME=${SCAN_SETTLE_TIME:-5}
+UPLOAD_RETRIES=${UPLOAD_RETRIES:-3}
+SETTLE_MAX_CHECKS=12
 
 if [ -z "$PAPERLESS_URL" ]; then
     echo "[ERROR] PAPERLESS_URL must be set."
@@ -36,7 +38,7 @@ echo "║     Dr. Henning Dickten      ║"
 echo "║            2025              ║"
 echo "╚══════════════════════════════╝"
 echo "[CONFIG] Paperless URL: $PAPERLESS_URL"
-echo "[CONFIG] Archive: $ARCHIVE | Whitelist: $WHITELIST | Settle: ${SCAN_SETTLE_TIME}s"
+echo "[CONFIG] Archive: $ARCHIVE | Whitelist: $WHITELIST | Settle: ${SCAN_SETTLE_TIME}s | Retries: $UPLOAD_RETRIES"
 echo "[CONFIG] User UID: $(id -u), GID: $(id -g)"
 
 # --- Helper Functions ---
@@ -142,21 +144,49 @@ upload_to_paperless() {
     chmod 600 "$hdr_file"
     printf 'header = "Authorization: Token %s"\n' "$api_key" > "$hdr_file"
 
+    # --fail-with-body: without it curl exits 0 on any HTTP response, so a
+    # 4xx/5xx from Paperless (e.g. 400 "No file was submitted.") would be
+    # reported as success and the file archived despite never being consumed.
     local rc=0
     if curl "${curl_opts[@]}" \
+          -sS --fail-with-body \
           --max-time "$UPLOAD_TIMEOUT" \
           -X POST \
           -K "$hdr_file" \
           "${curl_form[@]}" \
           "$PAPERLESS_URL/api/documents/post_document/"; then
+        echo
         echo "[SUCCESS] Upload complete: $filename"
     else
         rc=1
+        echo
         echo "[ERROR] Upload failed: $filename"
     fi
 
     rm -f "$hdr_file"
     return $rc
+}
+
+# Sleeps SCAN_SETTLE_TIME and repeats until the file's size and mtime are
+# unchanged across one interval -- some scanners keep writing (or rewrite)
+# the file over SMB after the first close_write. Gives up waiting after
+# SETTLE_MAX_CHECKS intervals and lets the upload proceed anyway.
+# Returns 1 if the file disappears meanwhile.
+wait_until_stable() {
+    local label="$1" filepath="$2" before after checks=0
+    before=$(stat -c '%s:%Y' "$filepath" 2>/dev/null) || return 1
+    while :; do
+        sleep "$SCAN_SETTLE_TIME"
+        after=$(stat -c '%s:%Y' "$filepath" 2>/dev/null) || return 1
+        [ "$before" = "$after" ] && return 0
+        checks=$((checks + 1))
+        if [ "$checks" -ge "$SETTLE_MAX_CHECKS" ]; then
+            echo "[$label] [WARN] $(basename "$filepath") still changing after $checks checks — uploading anyway."
+            return 0
+        fi
+        echo "[$label] $(basename "$filepath") is still being written, waiting another ${SCAN_SETTLE_TIME}s..."
+        before="$after"
+    done
 }
 
 # Warns (does not fail) if a mounted credential file is group/world
@@ -205,26 +235,43 @@ watch_inbox() {
         echo "[$label] Detected: $FILENAME"
 
         if check_whitelist "$FILENAME"; then
-            echo "[$label] Waiting ${SCAN_SETTLE_TIME}s to settle..."
-            sleep "$SCAN_SETTLE_TIME"
-
-            if [ ! -f "$FILEPATH" ]; then
-                echo "[$label] File disappeared during wait. Skipping."
-                continue
-            fi
-
-            if upload_to_paperless "$FILEPATH" "$api_key" "$tag_ids"; then
-                if [ "$ARCHIVE" = "true" ]; then
-                    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-                    mv "$FILEPATH" "$archive_dir/${TIMESTAMP}_$FILENAME"
-                    echo "[$label] Archived."
-                else
-                    rm "$FILEPATH"
-                    echo "[$label] Deleted."
+            # Each attempt (including retries) first waits for the file to
+            # stop changing, since a failed upload is often a scan that the
+            # scanner hadn't finished writing yet.
+            local attempt=0 result=failed
+            while :; do
+                echo "[$label] Waiting ${SCAN_SETTLE_TIME}s to settle..."
+                if ! wait_until_stable "$label" "$FILEPATH"; then
+                    result=gone
+                    break
                 fi
-            else
-                echo "[$label] Upload failed — keeping file for retry."
-            fi
+                if upload_to_paperless "$FILEPATH" "$api_key" "$tag_ids"; then
+                    result=ok
+                    break
+                fi
+                attempt=$((attempt + 1))
+                [ "$attempt" -gt "$UPLOAD_RETRIES" ] && break
+                echo "[$label] Retrying $FILENAME (retry $attempt/$UPLOAD_RETRIES)..."
+            done
+
+            case "$result" in
+                ok)
+                    if [ "$ARCHIVE" = "true" ]; then
+                        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+                        mv "$FILEPATH" "$archive_dir/${TIMESTAMP}_$FILENAME"
+                        echo "[$label] Archived."
+                    else
+                        rm "$FILEPATH"
+                        echo "[$label] Deleted."
+                    fi
+                    ;;
+                gone)
+                    echo "[$label] File disappeared during wait. Skipping."
+                    ;;
+                *)
+                    echo "[$label] Upload failed after $((UPLOAD_RETRIES + 1)) attempt(s) — keeping $FILENAME in inbox."
+                    ;;
+            esac
         else
             echo "[$label] Skipped (not in whitelist): $FILENAME"
         fi

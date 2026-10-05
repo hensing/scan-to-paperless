@@ -249,7 +249,8 @@ container — only the tag itself needs to exist before the watcher starts.
 | `WHITELIST` | Allowed file extensions | `pdf,jpg,png,bmp` | ❌ |
 | `ARCHIVE` | `true` = Move to archive folder, `false` = Delete after upload | `true` | ❌ |
 | `UPLOAD_TIMEOUT` | Max time (seconds) for API upload | `30` | ❌ |
-| `SCAN_SETTLE_TIME` | Seconds to wait after detection before upload | `5` | ❌ |
+| `SCAN_SETTLE_TIME` | Seconds to wait after detection before upload; the wait repeats until the file stops changing | `5` | ❌ |
+| `UPLOAD_RETRIES` | Retries after a failed upload (each waits for the file to settle again). A file that still fails stays in the inbox | `3` | ❌ |
 
 > There is no `PUID`/`PGID` setting — the container always runs as fixed UID/GID `65532:65532`. See [Host Permissions](#1b-host-permissions).
 
@@ -319,7 +320,8 @@ This version removes the container's root startup phase entirely. If you're upgr
 * Check if `PAPERLESS_URL` is reachable from inside the container.
 * Verify the API key (`PAPERLESS_API_KEY` or the key in `users.conf`).
 * If using a self-signed cert, try setting `PAPERLESS_VERIFY_SSL=false`.
-* Increase `SCAN_SETTLE_TIME`. Some network scanners report "finished" before the file is fully flushed to disk.
+* Increase `SCAN_SETTLE_TIME` or `UPLOAD_RETRIES`. Some network scanners report "finished" before the file is fully flushed to disk.
+* A file that failed all attempts stays in the inbox. Move it out and back in to trigger a new upload.
 
 **🚫 Scanner cannot connect (Network Error)**
 * Ensure port **445** is not blocked by a firewall on the host.
